@@ -10,8 +10,10 @@ interface LobbyScreenProps {
   character: CharacterConfig;
   stats: PlayerStats;
   spawnKey: SpawnKey;
+  ownedCount: number;
   muted: boolean;
   onSelectSpawn: (key: SpawnKey) => void;
+  onOpenGarage: () => void;
   onEditCharacter: () => void;
   onEnterWorld: () => void;
   onToggleMute: () => void;
@@ -22,8 +24,10 @@ export function LobbyScreen({
   character,
   stats,
   spawnKey,
+  ownedCount,
   muted,
   onSelectSpawn,
+  onOpenGarage,
   onEditCharacter,
   onEnterWorld,
   onToggleMute,
@@ -102,7 +106,7 @@ export function LobbyScreen({
             </div>
             <div className="bg-slate-900/65 rounded-xl p-2 border border-white/10">
               <div className="text-[10px] uppercase text-slate-400 font-semibold">Cash</div>
-              <div className="font-display font-bold text-base text-amber-300">${stats.cash}</div>
+              <div className="font-display font-bold text-base text-amber-300">₹{stats.cash}</div>
             </div>
           </div>
 
@@ -123,6 +127,17 @@ export function LobbyScreen({
         </div>
 
         <div className="flex flex-col items-stretch sm:items-end gap-2.5">
+          <button
+            type="button"
+            onClick={onOpenGarage}
+            className={`glass px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-amber-300 border border-amber-400/40 hover:bg-amber-500/15 flex items-center justify-center gap-2 ${
+              active ? 'pointer-events-auto' : 'pointer-events-none'
+            }`}
+          >
+            <span>🏎️</span>
+            <span>Garage ({ownedCount} Cars)</span>
+          </button>
+
           <div
             className={`glass rounded-2xl p-1.5 flex items-center gap-1 ${
               active ? 'pointer-events-auto' : 'pointer-events-none'

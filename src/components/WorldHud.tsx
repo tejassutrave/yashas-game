@@ -7,10 +7,13 @@ interface WorldHudProps {
   todIndex: number;
   muted: boolean;
   onSetMinimapCanvas: (el: HTMLCanvasElement | null) => void;
+  onOpenMap: () => void;
+  onOpenCarShop: () => void;
   onCycleTimeOfDay: () => void;
   onToggleMute: () => void;
   onReturnToLobby: () => void;
   onToggleVehicle: () => void;
+  onToggleTaxiJob: () => void;
   onStartHorn: () => void;
   onStopHorn: () => void;
   onTouchMove: (x: number, y: number) => void;
@@ -24,10 +27,13 @@ export function WorldHud({
   todIndex,
   muted,
   onSetMinimapCanvas,
+  onOpenMap,
+  onOpenCarShop,
   onCycleTimeOfDay,
   onToggleMute,
   onReturnToLobby,
   onToggleVehicle,
+  onToggleTaxiJob,
   onStartHorn,
   onStopHorn,
   onTouchMove,
@@ -70,15 +76,23 @@ export function WorldHud({
         active ? 'opacity-100 z-20' : 'opacity-0 z-10'
       }`}
     >
-      {/* Top-Left Live Minimap & FPS */}
+      {/* Top-Left Live Minimap & FPS (Click to Open Full Map) */}
       <div
         className={`fixed top-3 left-3 sm:top-5 sm:left-5 flex flex-col gap-2 ${
           active ? 'pointer-events-auto' : 'pointer-events-none'
         }`}
       >
-        <div className="glass rounded-2xl p-2 border border-white/20 shadow-2xl">
+        <button
+          type="button"
+          onClick={onOpenMap}
+          title="Click or press M to open City Map"
+          className="glass rounded-2xl p-2 border border-white/20 hover:border-sky-400/60 shadow-2xl text-left cursor-pointer"
+        >
           <div className="relative w-32 h-32 sm:w-40 sm:h-40 rounded-xl overflow-hidden bg-slate-950/90">
             <canvas ref={minimapRef} className="w-full h-full block" />
+            <div className="absolute top-1.5 left-1.5 text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-950/75 text-sky-300">
+              MAP (M)
+            </div>
             <div className="absolute top-1.5 right-1.5 text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-950/70 text-emerald-300">
               {hud.fps} FPS
             </div>
@@ -87,15 +101,18 @@ export function WorldHud({
               <span className="text-emerald-300 ml-1">{hud.speedKmh} km/h</span>
             </div>
           </div>
-        </div>
+        </button>
       </div>
 
-      {/* Top-Right Quick Controls */}
+      {/* Top-Right Quick Controls & Wallet */}
       <div
         className={`fixed top-3 right-3 sm:top-5 sm:right-5 flex items-center gap-2 ${
           active ? 'pointer-events-auto' : 'pointer-events-none'
         }`}
       >
+        <div className="glass px-3.5 py-2 rounded-xl text-xs sm:text-sm font-extrabold text-emerald-300 border border-emerald-400/30">
+          ₹{hud.cash}
+        </div>
         <button
           type="button"
           onClick={onCycleTimeOfDay}
@@ -122,40 +139,82 @@ export function WorldHud({
         </button>
       </div>
 
-      {/* Bottom Vehicle Interaction Prompt */}
-      {showVehiclePrompt && (
+      {/* Taxi Job Dispatch Banner */}
+      {hud.taxiJob.active && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 glass px-4 py-2 rounded-2xl border border-amber-400/40 flex items-center gap-3 text-xs sm:text-sm shadow-2xl">
+          <span className="text-lg">🚕</span>
+          <div>
+            <div className="font-bold text-white">
+              {hud.taxiJob.phase === 'pickup' ? 'Pick up Passenger' : 'Drop off Passenger'}
+              <span className="ml-2 text-amber-300">({hud.taxiJob.tier})</span>
+            </div>
+            <div className="text-[11px] text-slate-300">
+              Distance: <strong className="text-sky-300">{hud.taxiJob.distanceMeters}m</strong> • Fare:{' '}
+              <strong className="text-emerald-300">₹{hud.taxiJob.fareRupees}</strong>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Vehicle & Car Shop Interaction Prompt */}
+      {(showVehiclePrompt || hud.nearCarShop) && (
         <div
-          className={`fixed bottom-24 sm:bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2.5 ${
+          className={`fixed bottom-24 sm:bottom-8 left-1/2 -translate-x-1/2 flex flex-wrap items-center justify-center gap-2.5 ${
             active ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
         >
-          <button
-            type="button"
-            onClick={onToggleVehicle}
-            className="glass px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-white border border-sky-400/50 hover:bg-sky-500/20 flex items-center gap-2 shadow-xl"
-          >
-            <span className="px-2 py-0.5 rounded bg-sky-500/30 text-sky-200 font-extrabold text-xs">
-              E
-            </span>
-            <span>
-              {hud.inVehicle
-                ? `Exit ${hud.vehicleName || 'Vehicle'}`
-                : `Enter ${hud.nearbyVehicleName || 'Vehicle'}`}
-            </span>
-          </button>
-
-          {hud.inVehicle && (
+          {hud.nearCarShop && (
             <button
               type="button"
-              onPointerDown={onStartHorn}
-              onPointerUp={onStopHorn}
-              onPointerLeave={onStopHorn}
-              onPointerCancel={onStopHorn}
-              className="glass px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-amber-300 border border-amber-400/40 hover:bg-amber-500/20 flex items-center gap-1.5 shadow-xl"
+              onClick={onOpenCarShop}
+              className="btn-glow px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-white flex items-center gap-2 shadow-xl"
             >
-              <span>📢</span>
-              <span>Horn (H)</span>
+              <span>🏪</span>
+              <span>Enter THE CAR SHOP</span>
             </button>
+          )}
+          {showVehiclePrompt && (
+            <>
+              <button
+                type="button"
+                onClick={onToggleVehicle}
+                className="glass px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-white border border-sky-400/50 hover:bg-sky-500/20 flex items-center gap-2 shadow-xl"
+              >
+                <span className="px-2 py-0.5 rounded bg-sky-500/30 text-sky-200 font-extrabold text-xs">
+                  E
+                </span>
+                <span>
+                  {hud.inVehicle
+                    ? `Exit ${hud.vehicleName || 'Vehicle'}`
+                    : `Enter ${hud.nearbyVehicleName || 'Vehicle'}`}
+                </span>
+              </button>
+
+              {hud.inVehicle && hud.vehicleStyle === 'taxi' && (
+                <button
+                  type="button"
+                  onClick={onToggleTaxiJob}
+                  className="glass px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-yellow-300 border border-yellow-400/50 hover:bg-yellow-500/20 flex items-center gap-1.5 shadow-xl"
+                >
+                  <span>🚕</span>
+                  <span>{hud.taxiJob.active ? 'Cancel Job (CapsLock)' : 'Taxi Job (CapsLock)'}</span>
+                </button>
+              )}
+
+              {hud.inVehicle && (
+                <button
+                  type="button"
+                  onPointerDown={onStartHorn}
+                  onPointerUp={onStopHorn}
+                  onPointerLeave={onStopHorn}
+                  onPointerCancel={onStopHorn}
+                  className="glass px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold text-amber-300 border border-amber-400/40 hover:bg-amber-500/20 flex items-center gap-1.5 shadow-xl"
+                >
+                  <span>{hud.vehicleStyle === 'cycle' ? '🔔' : '📢'}</span>
+                  <span>{hud.vehicleStyle === 'cycle' ? 'Bell (H)' : 'Horn (H)'}</span>
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
