@@ -16,9 +16,49 @@ function ensureAudio(): AudioContext | null {
   return audioCtx;
 }
 
+let engineOsc: OscillatorNode | null = null;
+let engineGain: GainNode | null = null;
+
+export function updateEngineHum(active: boolean, speedKmh: number, style: string | null): void {
+  if (audioMuted || !active || !style || style === 'cycle') {
+    if (engineGain && audioCtx) {
+      engineGain.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.05);
+    }
+    return;
+  }
+  try {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    if (!engineOsc || !engineGain) {
+      engineOsc = ctx.createOscillator();
+      engineGain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 260;
+      engineOsc.type = style === 'bike' ? 'sawtooth' : 'triangle';
+      engineOsc.frequency.value = 52;
+      engineGain.gain.value = 0.0001;
+      engineOsc.connect(filter);
+      filter.connect(engineGain);
+      engineGain.connect(ctx.destination);
+      engineOsc.start();
+    }
+    const baseFreq = style === 'truck' ? 38 : style === 'supercar' ? 64 : style === 'bike' ? 72 : 50;
+    const freq = baseFreq + Math.min(110, speedKmh * 0.55);
+    const vol = 0.016 + Math.min(0.028, speedKmh * 0.0002);
+    engineOsc.frequency.setTargetAtTime(freq, ctx.currentTime, 0.06);
+    engineGain.gain.setTargetAtTime(vol, ctx.currentTime, 0.06);
+  } catch {
+    // Ignore
+  }
+}
+
 export function setMuted(muted: boolean): void {
   audioMuted = muted;
-  if (muted) stopContinuousHorn();
+  if (muted) {
+    stopContinuousHorn();
+    updateEngineHum(false, 0, null);
+  }
 }
 
 export function isMuted(): boolean {

@@ -3,12 +3,15 @@ import { TIME_PRESETS_META, type WorldHudSnapshot } from '../types/game';
 
 interface WorldHudProps {
   active: boolean;
+  isMobile: boolean;
   hud: WorldHudSnapshot;
   todIndex: number;
   muted: boolean;
   onSetMinimapCanvas: (el: HTMLCanvasElement | null) => void;
+  onToggleDeviceMode: () => void;
   onOpenMap: () => void;
   onOpenCarShop: () => void;
+  onToggleStreetRace: () => void;
   onCycleTimeOfDay: () => void;
   onToggleMute: () => void;
   onReturnToLobby: () => void;
@@ -23,12 +26,15 @@ interface WorldHudProps {
 
 export function WorldHud({
   active,
+  isMobile,
   hud,
   todIndex,
   muted,
   onSetMinimapCanvas,
+  onToggleDeviceMode,
   onOpenMap,
   onOpenCarShop,
+  onToggleStreetRace,
   onCycleTimeOfDay,
   onToggleMute,
   onReturnToLobby,
@@ -115,6 +121,24 @@ export function WorldHud({
         </div>
         <button
           type="button"
+          onClick={onToggleStreetRace}
+          className={`glass px-3 py-2 rounded-xl text-xs font-bold hover:text-white ${
+            hud.race.active ? 'text-rose-300 border border-rose-400/40' : 'text-amber-300'
+          }`}
+          title="Start / Cancel Street Race (R)"
+        >
+          <span>{hud.race.active ? '🏁 Cancel Race' : '🏁 Race (R)'}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onToggleDeviceMode}
+          className="glass px-3 py-2 rounded-xl text-xs font-bold text-sky-300 hover:text-white"
+          title="Switch Touch / Keyboard Controls"
+        >
+          <span>{isMobile ? '📱 Touch' : '💻 Keys'}</span>
+        </button>
+        <button
+          type="button"
           onClick={onCycleTimeOfDay}
           className="glass px-3 py-2 rounded-xl text-xs font-bold text-amber-200 hover:text-white flex items-center gap-1.5"
           title="Cycle Time of Day"
@@ -139,14 +163,35 @@ export function WorldHud({
         </button>
       </div>
 
+      {/* Street Race Banner */}
+      {hud.race.active && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 glass px-4 py-2 rounded-2xl border border-amber-400/50 flex items-center gap-3 text-xs sm:text-sm shadow-2xl">
+          <span className="text-lg">🏁</span>
+          <div>
+            <div className="font-bold text-white">
+              Street Race • Checkpoint {hud.race.checkpoint}/{hud.race.totalCheckpoints}
+            </div>
+            <div className="text-[11px] text-slate-300">
+              Time Left: <strong className="text-amber-300">{hud.race.timeLeft}s</strong> • Prize:{' '}
+              <strong className="text-emerald-300">₹{hud.race.reward}</strong>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Taxi Job Dispatch Banner */}
-      {hud.taxiJob.active && (
+      {hud.taxiJob.active && !hud.race.active && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 glass px-4 py-2 rounded-2xl border border-amber-400/40 flex items-center gap-3 text-xs sm:text-sm shadow-2xl">
           <span className="text-lg">🚕</span>
           <div>
             <div className="font-bold text-white">
               {hud.taxiJob.phase === 'pickup' ? 'Pick up Passenger' : 'Drop off Passenger'}
               <span className="ml-2 text-amber-300">({hud.taxiJob.tier})</span>
+              {hud.taxiJob.streak > 0 && (
+                <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                  {hud.taxiJob.streak}x Streak
+                </span>
+              )}
             </div>
             <div className="text-[11px] text-slate-300">
               Distance: <strong className="text-sky-300">{hud.taxiJob.distanceMeters}m</strong> • Fare:{' '}
@@ -219,27 +264,34 @@ export function WorldHud({
         </div>
       )}
 
-      {/* Desktop Controls Hint */}
-      <div className="hidden md:flex fixed bottom-5 left-5 glass px-4 py-2 rounded-2xl text-[11px] text-slate-200/90 items-center gap-3">
-        <span>
-          <strong className="text-white">WASD</strong> Move / Drive
-        </span>
-        <span>•</span>
-        <span>
-          <strong className="text-white">Shift</strong> Sprint / Boost
-        </span>
-        <span>•</span>
-        <span>
-          <strong className="text-white">Space</strong> Jump / Brake
-        </span>
-        <span>•</span>
-        <span>
-          <strong className="text-white">Drag</strong> Orbit Camera
-        </span>
-      </div>
+      {/* Desktop Controls Hint (shown on Laptop/PC) */}
+      {!isMobile && (
+        <div className="fixed bottom-5 left-5 glass px-4 py-2 rounded-2xl text-[11px] text-slate-200/90 flex items-center gap-3">
+          <span>
+            <strong className="text-white">WASD</strong> Move / Drive
+          </span>
+          <span>•</span>
+          <span>
+            <strong className="text-white">Shift</strong> Sprint
+          </span>
+          <span>•</span>
+          <span>
+            <strong className="text-white">Space</strong> Jump / Brake
+          </span>
+          <span>•</span>
+          <span>
+            <strong className="text-white">M</strong> Map
+          </span>
+          <span>•</span>
+          <span>
+            <strong className="text-white">Drag</strong> Orbit
+          </span>
+        </div>
+      )}
 
-      {/* Mobile Touch Controls */}
-      <div className="md:hidden fixed inset-0 pointer-events-none">
+      {/* Mobile Touch Controls (shown on Phone/Tablet in both Portrait & Landscape) */}
+      {isMobile && (
+        <div className="fixed inset-0 pointer-events-none">
         <div
           onPointerDown={(e) => {
             joyIdRef.current = e.pointerId;
@@ -313,6 +365,7 @@ export function WorldHud({
           </div>
         </div>
       </div>
+      )}
     </section>
   );
 }

@@ -5,8 +5,9 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { playSFX, playTaxiComplete, playTaxiStart, startContinuousHorn as sfxStartHorn, stopContinuousHorn as sfxStopHorn } from '../audio/sfx';
+import { playSFX, playTaxiComplete, playTaxiStart, startContinuousHorn as sfxStartHorn, stopContinuousHorn as sfxStopHorn, updateEngineHum } from '../audio/sfx';
 import { CAR_SHOP_LOCATION, GENDER_CATALOG, PALETTES } from '../types/game';
+import { detectMobileDevice } from '../utils/device';
 import type { CharacterConfig, GameStage, GenderKey, ShopCarSpec, SpawnKey, WorldHudSnapshot } from '../types/game';
 
 export interface RuntimeCallbacks {
@@ -30,12 +31,49 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
   let carShopRouteActive = false;
   let carShopRingMesh: THREE.Mesh | null = null;
   let garageSpawnedCar: any = null;
+  let playerHeadlight: THREE.SpotLight | null = null;
+
+  // Pre-allocated scratch vectors (eliminates per-frame GC stutters)
+  const _yAxis = new THREE.Vector3(0, 1, 0);
+  const _fwdVec = new THREE.Vector3();
+  const _rightVec = new THREE.Vector3();
+  const _wishDir = new THREE.Vector3();
+  const _focusVec = new THREE.Vector3();
+  const _desiredCam = new THREE.Vector3();
+  const _seatVec = new THREE.Vector3();
+
+  // Shared vehicle materials (cuts GPU memory & shader compilations)
+  const sharedGlassMat = new THREE.MeshStandardMaterial({ color: 0x1e3a52, roughness: 0.08, metalness: 0.85, transparent: true, opacity: 0.78 });
+  const sharedTrimMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.6, metalness: 0.2 });
+  const sharedChromeMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.2, metalness: 0.9 });
+  const sharedTireMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.85 });
+  const sharedHeadMat = new THREE.MeshStandardMaterial({ color: 0xfef9c3, emissive: 0xfef08a, emissiveIntensity: 0.8 });
+  const sharedInteriorMat = new THREE.MeshStandardMaterial({ color: 0x262930, roughness: 0.8 });
+
+  const RACE_CHECKPOINTS = [
+    { x: 168, z: -84 },
+    { x: 168, z: -168 },
+    { x: 84, z: -168 },
+    { x: 0, z: -168 },
+    { x: -84, z: -84 },
+    { x: 0, z: 0 },
+  ];
+  const raceState = {
+    active: false,
+    checkpoint: 0,
+    timeLeft: 0,
+    reward: 2000,
+    ringMesh: null as THREE.Mesh | null,
+  };
 
   const taxiJob = {
     active: false,
     phase: 'pickup' as 'pickup' | 'dropoff',
     tier: 'Short' as 'Short' | 'Medium' | 'Long',
     fareRupees: 0,
+    journeyElapsed: 0,
+    crashedDuringFare: false,
+    streak: 0,
     pickupPos: new THREE.Vector3(),
     dropoffPos: new THREE.Vector3(),
     passengerMesh: null as THREE.Group | null,
@@ -695,11 +733,11 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
                     rightArm.elbowPivot.rotation.x = -0.25;
 
                     if (vehicleType === 'bicycle') {
-                        const ped = time * 7.5 + phase;
-                        leftLeg.hipPivot.rotation.x = -0.75 + Math.sin(ped) * 0.42;
-                        rightLeg.hipPivot.rotation.x = -0.75 - Math.sin(ped) * 0.42;
-                        leftLeg.kneePivot.rotation.x = 0.85 + Math.cos(ped) * 0.38;
-                        rightLeg.kneePivot.rotation.x = 0.85 - Math.cos(ped) * 0.38;
+                        const ped = time * (speedNorm > 0.05 ? 2.5 + speedNorm * 8.5 : 0) + phase;
+                        leftLeg.hipPivot.rotation.x = -0.75 + Math.sin(ped) * (speedNorm > 0.05 ? 0.44 : 0.05);
+                        rightLeg.hipPivot.rotation.x = -0.75 - Math.sin(ped) * (speedNorm > 0.05 ? 0.44 : 0.05);
+                        leftLeg.kneePivot.rotation.x = 0.85 + Math.cos(ped) * (speedNorm > 0.05 ? 0.4 : 0.05);
+                        rightLeg.kneePivot.rotation.x = 0.85 - Math.cos(ped) * (speedNorm > 0.05 ? 0.4 : 0.05);
                     } else {
                         leftLeg.hipPivot.rotation.set(-0.62, 0, 0.24);
                         rightLeg.hipPivot.rotation.set(-0.62, 0, -0.24);
@@ -834,13 +872,13 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
         function createVehicleMesh(style, paintHex, hasOpeningDoor = false) {
             const root = new THREE.Group();
             const paintMat = new THREE.MeshStandardMaterial({ color: paintHex, roughness: 0.22, metalness: 0.55 });
-            const glassMat = new THREE.MeshStandardMaterial({ color: 0x1e3a52, roughness: 0.08, metalness: 0.85, transparent: true, opacity: 0.78 });
-            const trimMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.6, metalness: 0.2 });
-            const chromeMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.2, metalness: 0.9 });
-            const tireMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.85 });
-            const headMat = new THREE.MeshStandardMaterial({ color: 0xfef9c3, emissive: 0xfef08a, emissiveIntensity: 0.8 });
+            const glassMat = sharedGlassMat;
+            const trimMat = sharedTrimMat;
+            const chromeMat = sharedChromeMat;
+            const tireMat = sharedTireMat;
+            const headMat = sharedHeadMat;
             const tailMat = new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xdc2626, emissiveIntensity: 0.75 });
-            const interiorMat = new THREE.MeshStandardMaterial({ color: 0x262930, roughness: 0.8 });
+            const interiorMat = sharedInteriorMat;
 
             if (style === 'bike') {
                 const wheels = [];
@@ -1139,7 +1177,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
             });
 
             const seatY = isSUV ? 0.40 : 0.24;
-            root.userData = { wheels, frontPivots, doorPivot, seatOffset: new THREE.Vector3(0.42, seatY, -0.10), len, wid, style };
+            root.userData = { wheels, frontPivots, doorPivot, tailMat, paintMat, seatOffset: new THREE.Vector3(0.42, seatY, -0.10), len, wid, style };
             return root;
         }
 
@@ -1245,7 +1283,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
             sunLight.intensity = p.sunIntensity;
             renderer.toneMappingExposure = p.exposure;
 
-            sunDisc.position.copy(p.sunDir).multiplyScalar(3000);
+            sunDisc.position.copy(p.sunDir).multiplyScalar(620);
             sunDisc.lookAt(0, 0, 0);
             sunDisc.material.color.setHex(p.sunColor);
 
@@ -1259,28 +1297,37 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
             // container passed in
             scene = new THREE.Scene();
 
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.15, 4500);
+            const isMobileDev = detectMobileDevice();
+            const isPortrait = window.innerHeight > window.innerWidth;
+            camera = new THREE.PerspectiveCamera(isPortrait ? 60 : 50, window.innerWidth / window.innerHeight, 0.15, 850);
             camera.position.set(0, 1.85, 5.4);
 
-            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+            renderer = new THREE.WebGLRenderer({ antialias: !isMobileDev, powerPreference: 'high-performance' });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            const maxDpr = isMobileDev ? 1.25 : 1.5;
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 0.88;
             renderer.outputColorSpace = THREE.SRGBColorSpace;
             renderer.shadowMap.enabled = true;
             renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.shadowMap.autoUpdate = false;
+            renderer.shadowMap.needsUpdate = true;
             container.appendChild(renderer.domElement);
+
+            playerHeadlight = new THREE.SpotLight(0xfff7d6, 28, 55, Math.PI / 4.2, 0.5, 1.4);
+            playerHeadlight.visible = false;
+            scene.add(playerHeadlight, playerHeadlight.target);
 
             clock = new THREE.Clock();
 
-            const skyGeo = new THREE.SphereGeometry(3600, 32, 20);
+            const skyGeo = new THREE.SphereGeometry(720, 32, 20);
             const skyMat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, fog: false });
             skyMesh = new THREE.Mesh(skyGeo, skyMat);
             scene.add(skyMesh);
 
             sunDisc = new THREE.Mesh(
-                new THREE.CircleGeometry(140, 24),
+                new THREE.CircleGeometry(30, 24),
                 new THREE.MeshBasicMaterial({ color: 0xfff7d6, fog: false })
             );
             scene.add(sunDisc);
@@ -1325,6 +1372,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
 
         function onResize() {
             if (!camera || !renderer) return;
+            camera.fov = window.innerHeight > window.innerWidth ? 60 : 50;
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight); composer?.setSize(window.innerWidth, window.innerHeight); bloomPass?.setSize(window.innerWidth, window.innerHeight);
@@ -2386,6 +2434,8 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
                 if (state.stage === 'world') {
                     if (e.code === 'KeyE') {
                         toggleVehicle();
+                    } else if (e.code === 'KeyR') {
+                        toggleStreetRace();
                     } else if (e.code === 'CapsLock') {
                         e.preventDefault();
                         toggleTaxiJob();
@@ -2561,8 +2611,11 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
                 const isCycle = car.style === 'cycle';
                 const isSuper = car.style === 'supercar';
 
-                const maxFwd = isCycle ? 14 : (isSuper ? 48 : (isBike ? 38 : (isTruck ? 22 : 30)));
-                const accelRate = isCycle ? 12 : (isSuper ? 34 : (isBike ? 30 : (isTruck ? 14 : 22)));
+                const isTurbo = Boolean(car.isTurbo);
+                const turboMult = isTurbo ? 1.25 : 1.0;
+
+                const maxFwd = (isCycle ? 14 : (isSuper ? 48 : (isBike ? 38 : (isTruck ? 22 : 30)))) * turboMult;
+                const accelRate = (isCycle ? 12 : (isSuper ? 34 : (isBike ? 30 : (isTruck ? 14 : 22)))) * turboMult;
                 const accel = fwd > 0 ? accelRate : (fwd < 0 ? 18 : 0);
                 if (fwd !== 0) {
                     car.speed += fwd * accel * dt;
@@ -2617,6 +2670,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
                             camState.shake = 0.45;
                             t.crashed = true;
                             t.speed = 0;
+                            if (taxiJob.active) taxiJob.crashedDuringFare = true;
                             showToast('Crash! Vehicle stopped.');
                         }
                         const pushAng = Math.atan2(car.pos.x - t.x, car.pos.z - t.z);
@@ -2633,34 +2687,55 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
 
                 car.mesh.userData.wheels.forEach(w => { w.rotation.x += (car.speed * dt) / (isTruck ? 0.5 : 0.36); });
                 car.mesh.userData.frontPivots.forEach(fp => { fp.rotation.y = car.steer; });
+                if (car.mesh.userData.tailMat) {
+                    car.mesh.userData.tailMat.emissiveIntensity = (handbrake || fwd < -0.1) ? 2.8 : 0.75;
+                }
+                if (playerHeadlight) {
+                    const hlOn = state.todIndex >= 1 && !isCycle;
+                    playerHeadlight.visible = hlOn;
+                    if (hlOn) {
+                        playerHeadlight.position.set(car.pos.x + Math.sin(car.yaw) * 1.9, car.pos.y + 0.85, car.pos.z + Math.cos(car.yaw) * 1.9);
+                        playerHeadlight.target.position.set(car.pos.x + Math.sin(car.yaw) * 18, car.pos.y + 0.2, car.pos.z + Math.cos(car.yaw) * 18);
+                        playerHeadlight.target.updateMatrixWorld();
+                    }
+                }
 
-                const seatLocal = car.mesh.userData.seatOffset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), car.yaw);
-                player.pos.copy(car.pos).add(seatLocal);
+                _seatVec.copy(car.mesh.userData.seatOffset).applyAxisAngle(_yAxis, car.yaw);
+                player.pos.copy(car.pos).add(_seatVec);
                 player.yaw = car.yaw;
                 worldPlayerChar.position.copy(player.pos);
                 worldPlayerChar.rotation.y = car.yaw;
                 worldPlayerChar.rotation.z = (isBike || isCycle) ? car.mesh.rotation.z : 0;
-                animateHuman(worldPlayerChar, time, 0, true, true, 0, (isBike || isCycle) ? 'bike' : 'car');
+                animateHuman(
+                  worldPlayerChar,
+                  time,
+                  isCycle ? Math.abs(car.speed) / 14 : 0,
+                  true,
+                  true,
+                  0,
+                  isCycle ? 'bicycle' : (isBike ? 'bike' : 'car')
+                );
 
                 const kmh = Math.round(Math.abs(car.speed) * 3.6);
                 
                 
             } else {
+                if (playerHeadlight) playerHeadlight.visible = false;
                 const sprinting = Boolean(keys['ShiftLeft'] || keys['ShiftRight'] || touchInput.sprint);
                 const moveSpeed = sprinting ? 9.2 : 5.0;
 
-                const forwardVec = new THREE.Vector3(-Math.sin(camState.yaw), 0, -Math.cos(camState.yaw));
-                const rightVec = new THREE.Vector3(Math.cos(camState.yaw), 0, -Math.sin(camState.yaw));
-                const wishDir = new THREE.Vector3()
-                    .addScaledVector(forwardVec, fwd)
-                    .addScaledVector(rightVec, -turn);
+                _fwdVec.set(-Math.sin(camState.yaw), 0, -Math.cos(camState.yaw));
+                _rightVec.set(Math.cos(camState.yaw), 0, -Math.sin(camState.yaw));
+                _wishDir.set(0, 0, 0)
+                    .addScaledVector(_fwdVec, fwd)
+                    .addScaledVector(_rightVec, -turn);
 
-                if (wishDir.lengthSq() > 0.001) {
-                    wishDir.normalize();
-                    player.vel.x = THREE.MathUtils.lerp(player.vel.x, wishDir.x * moveSpeed, Math.min(1, 14 * dt));
-                    player.vel.z = THREE.MathUtils.lerp(player.vel.z, wishDir.z * moveSpeed, Math.min(1, 14 * dt));
+                if (_wishDir.lengthSq() > 0.001) {
+                    _wishDir.normalize();
+                    player.vel.x = THREE.MathUtils.lerp(player.vel.x, _wishDir.x * moveSpeed, Math.min(1, 14 * dt));
+                    player.vel.z = THREE.MathUtils.lerp(player.vel.z, _wishDir.z * moveSpeed, Math.min(1, 14 * dt));
 
-                    const targetYaw = Math.atan2(wishDir.x, wishDir.z);
+                    const targetYaw = Math.atan2(_wishDir.x, _wishDir.z);
                     let diff = targetYaw - player.yaw;
                     while (diff > Math.PI) diff -= Math.PI * 2;
                     while (diff < -Math.PI) diff += Math.PI * 2;
@@ -3015,6 +3090,17 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
             mmCtx.fill();
             mmCtx.stroke();
 
+            if (raceState.active) {
+                const cp = RACE_CHECKPOINTS[raceState.checkpoint];
+                mmCtx.fillStyle = '#f59e0b';
+                mmCtx.strokeStyle = '#ffffff';
+                mmCtx.lineWidth = 2;
+                mmCtx.beginPath();
+                mmCtx.arc(toX(cp.x), toY(cp.z), Math.max(4.5, 6 * dpr * 0.7), 0, Math.PI * 2);
+                mmCtx.fill();
+                mmCtx.stroke();
+            }
+
             if (taxiJob.active) {
                 const target = taxiJob.phase === 'pickup' ? taxiJob.pickupPos : taxiJob.dropoffPos;
                 mmCtx.fillStyle = taxiJob.phase === 'pickup' ? '#38bdf8' : '#22c55e';
@@ -3106,9 +3192,9 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
 
             skyMesh.position.set(focus.x, 0, focus.z);
             sunDisc.position.set(
-                focus.x + p.sunDir.x * 3000,
-                p.sunDir.y * 3000,
-                focus.z + p.sunDir.z * 3000
+                focus.x + p.sunDir.x * 620,
+                p.sunDir.y * 620,
+                focus.z + p.sunDir.z * 620
             );
             sunDisc.lookAt(focus);
         }
@@ -3125,12 +3211,18 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
     }
 
     let lastHudEmit = 0;
+    let frameCount = 0;
 
     const tick = () => {
       if (disposed) return;
       rafId = requestAnimationFrame(tick);
+      frameCount++;
       const dt = Math.min(clock.getDelta(), 0.05);
       const time = clock.elapsedTime;
+
+      if (frameCount % 2 === 0) {
+        renderer.shadowMap.needsUpdate = true;
+      }
 
       fpsFrames++;
       const now = performance.now();
@@ -3145,15 +3237,22 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
         animateHuman(girlSelectChar, time, 0, true, false, 1.4, 'car');
         if (boySelectChar) boySelectChar.rotation.y = 0.22 + Math.sin(time * 0.8) * 0.14;
         if (girlSelectChar) girlSelectChar.rotation.y = -0.22 - Math.sin(time * 0.8) * 0.14;
+        updateEngineHum(false, 0, null);
       } else if (state.stage === 'customize') {
         animateHuman(customChar, time, 0, true, false, 0, 'car');
+        updateEngineHum(false, 0, null);
       } else if (state.stage === 'lobby') {
         animateHuman(lobbyChar, time, 0, true, false, 0.5, 'car');
+        updateEngineHum(false, 0, null);
       } else if (state.stage === 'world') {
         updateTrafficSignals(dt);
         updatePlayerAndVehicles(dt, time);
-        updateTaxiJob(time);
+        updateTaxiJob(dt, time);
+        updateRace(dt, time);
         updatePedestriansAndBeach(dt, time);
+
+        const liveKmh = player.drivingCar ? Math.round(Math.abs(player.drivingCar.speed) * 3.6) : 0;
+        updateEngineHum(Boolean(player.drivingCar), liveKmh, player.drivingCar?.style ?? null);
 
         if (now - lastHudEmit >= 55) {
           lastHudEmit = now;
@@ -3164,7 +3263,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
             showToast('Arrived at The Car Shop! Exit vehicle (E) and walk inside.');
           }
           renderMinimap();
-          const speedKmh = player.drivingCar ? Math.round(Math.abs(player.drivingCar.speed) * 3.6) : 0;
+          const speedKmh = liveKmh;
           const taxiTarget = taxiJob.phase === 'pickup' ? taxiJob.pickupPos : taxiJob.dropoffPos;
           const taxiDist = (taxiJob.active && player.drivingCar)
             ? Math.round(Math.hypot(player.drivingCar.pos.x - taxiTarget.x, player.drivingCar.pos.z - taxiTarget.z))
@@ -3184,6 +3283,14 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
               tier: taxiJob.tier,
               distanceMeters: taxiDist,
               fareRupees: taxiJob.fareRupees,
+              streak: taxiJob.streak,
+            },
+            race: {
+              active: raceState.active,
+              checkpoint: raceState.checkpoint + 1,
+              totalCheckpoints: RACE_CHECKPOINTS.length,
+              timeLeft: Math.max(0, Math.ceil(raceState.timeLeft)),
+              reward: raceState.reward,
             },
             carShopRouteActive,
             nearCarShop: !player.drivingCar && distToShop < 4.5,
@@ -3300,6 +3407,8 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
     taxiJob.phase = 'pickup';
     taxiJob.tier = picked.name;
     taxiJob.fareRupees = fare;
+    taxiJob.journeyElapsed = 0;
+    taxiJob.crashedDuringFare = false;
     taxiJob.pickupPos.copy(pickup);
     taxiJob.dropoffPos.copy(dropoff);
     taxiJob.passengerMesh = pMesh;
@@ -3345,7 +3454,63 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
     }
   }
 
-  function updateTaxiJob(time: number) {
+  function toggleStreetRace() {
+    if (raceState.active) {
+      raceState.active = false;
+      if (raceState.ringMesh) raceState.ringMesh.visible = false;
+      showToast('Street Race cancelled.');
+      return;
+    }
+    if (!raceState.ringMesh) {
+      const geo = new THREE.TorusGeometry(3.2, 0.25, 10, 28);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+      const ring = new THREE.Mesh(geo, mat);
+      ring.rotation.x = Math.PI / 2;
+      worldGroup.add(ring);
+      raceState.ringMesh = ring;
+    }
+    raceState.active = true;
+    raceState.checkpoint = 0;
+    raceState.timeLeft = 55;
+    const cp = RACE_CHECKPOINTS[0];
+    raceState.ringMesh.position.set(cp.x, 1.2, cp.z);
+    raceState.ringMesh.visible = true;
+    playTaxiStart();
+    showToast('Street Race Started! Hit all 6 orange checkpoints in 55s to win ₹2,000!');
+  }
+
+  function updateRace(dt: number, time: number) {
+    if (!raceState.active) return;
+    raceState.timeLeft -= dt;
+    if (raceState.timeLeft <= 0) {
+      raceState.active = false;
+      if (raceState.ringMesh) raceState.ringMesh.visible = false;
+      showToast('Time up! Street Race ended.');
+      return;
+    }
+    const cp = RACE_CHECKPOINTS[raceState.checkpoint];
+    if (raceState.ringMesh) {
+      raceState.ringMesh.position.y = 1.4 + Math.sin(time * 4) * 0.25;
+      raceState.ringMesh.rotation.z = time * 1.5;
+    }
+    const pPos = player.drivingCar ? player.drivingCar.pos : player.pos;
+    if (Math.hypot(pPos.x - cp.x, pPos.z - cp.z) < 6.5) {
+      raceState.checkpoint++;
+      if (raceState.checkpoint >= RACE_CHECKPOINTS.length) {
+        raceState.active = false;
+        if (raceState.ringMesh) raceState.ringMesh.visible = false;
+        playerCash += raceState.reward;
+        playTaxiComplete();
+        showToast(`Race Won! +₹${raceState.reward} (Wallet: ₹${playerCash})`);
+      } else {
+        const nextCp = RACE_CHECKPOINTS[raceState.checkpoint];
+        if (raceState.ringMesh) raceState.ringMesh.position.set(nextCp.x, 1.2, nextCp.z);
+        playSFX('select');
+      }
+    }
+  }
+
+  function updateTaxiJob(dt: number, time: number) {
     if (!taxiJob.active) return;
     if (!player.drivingCar || player.drivingCar.style !== 'taxi') {
       if (taxiJob.arrowGroup) taxiJob.arrowGroup.visible = false;
@@ -3383,6 +3548,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
           taxiJob.seatedInTaxi = car;
         }
         taxiJob.phase = 'dropoff';
+        taxiJob.journeyElapsed = 0;
         if (taxiJob.beaconMesh) {
           taxiJob.beaconMesh.position.set(taxiJob.dropoffPos.x, 0.08, taxiJob.dropoffPos.z);
           (taxiJob.beaconMesh.material as THREE.MeshBasicMaterial).color.setHex(0x22c55e);
@@ -3397,15 +3563,24 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
         showToast('Passenger aboard! Follow the green arrow to drop-off.');
       }
     } else {
+      taxiJob.journeyElapsed += dt;
       if (taxiJob.passengerMesh) {
         animateHuman(taxiJob.passengerMesh, time, 0, true, true, 0, 'car');
       }
       if (dist < 6.8) {
-        // Reached destination: passenger gets out, pay ₹, auto-start next journey!
-        const earned = taxiJob.fareRupees;
+        // Reached destination: passenger gets out, pay ₹ + Speed Tip, auto-start next journey!
+        const fastBonus = taxiJob.journeyElapsed < 35 && !taxiJob.crashedDuringFare
+          ? Math.floor(50 + Math.random() * 51)
+          : 0;
+        const earned = taxiJob.fareRupees + fastBonus;
+        taxiJob.streak++;
         playerCash += earned;
         playTaxiComplete();
-        showToast(`Drop-off Complete! +₹${earned} (Wallet: ₹${playerCash})`);
+        showToast(
+          fastBonus > 0
+            ? `Fast Drop-off! +₹${taxiJob.fareRupees} + ₹${fastBonus} Tip (Streak ${taxiJob.streak}x)`
+            : `Drop-off Complete! +₹${earned} (Wallet: ₹${playerCash})`
+        );
         startNextTaxiJourney(true);
       }
     }
@@ -3464,18 +3639,19 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
       lobbyGroup.visible = stage === 'lobby';
       worldGroup.visible = stage === 'world';
 
+      const portraitPad = window.innerHeight > window.innerWidth ? 1.2 : 0;
       if (stage === 'gender') {
         camState.targetYaw = 0;
         camState.targetPitch = 0.14;
-        camState.targetDistance = 4.6;
+        camState.targetDistance = 4.6 + portraitPad;
       } else if (stage === 'customize') {
         camState.targetYaw = 0.25;
         camState.targetPitch = 0.16;
-        camState.targetDistance = 3.2;
+        camState.targetDistance = 3.2 + portraitPad;
       } else if (stage === 'lobby') {
         camState.targetYaw = -0.35;
         camState.targetPitch = 0.18;
-        camState.targetDistance = 3.6;
+        camState.targetDistance = 3.6 + portraitPad;
       } else if (stage === 'world') {
         camState.targetYaw = player.yaw;
         camState.targetPitch = 0.28;
@@ -3486,7 +3662,7 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
       state.character = { ...cfg };
       rebuildCustomCharacter();
     },
-    enterOpenWorld(spawnKey: SpawnKey, garageCar?: ShopCarSpec | null) {
+    enterOpenWorld(spawnKey: SpawnKey, garageCar?: ShopCarSpec | null, customColor?: number, isTurbo?: boolean) {
       state.spawnKey = spawnKey;
       stopContinuousHorn();
       rebuildWorldPlayerCharacter();
@@ -3507,15 +3683,17 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
         garageSpawnedCar = null;
       }
       if (garageCar) {
-        const mesh = createVehicleMesh(garageCar.style, garageCar.color, true);
+        const paintHex = customColor ?? garageCar.color;
+        const mesh = createVehicleMesh(garageCar.style, paintHex, true);
         const gx = sp.x - 4.2;
         const gz = sp.z;
         mesh.position.set(gx, 0.04, gz);
         mesh.rotation.y = sp.yaw;
         worldGroup.add(mesh);
         garageSpawnedCar = {
-          name: `${garageCar.brand} ${garageCar.name}`,
+          name: `${garageCar.brand} ${garageCar.name}${isTurbo ? ' (Turbo)' : ''}`,
           style: garageCar.style,
+          isTurbo: Boolean(isTurbo),
           mesh,
           pos: new THREE.Vector3(gx, 0.04, gz),
           yaw: sp.yaw,
@@ -3542,16 +3720,17 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
     setCash(cash: number) {
       playerCash = cash;
     },
-    spawnPurchasedCar(car: ShopCarSpec) {
-      const mesh = createVehicleMesh(car.style, car.color, true);
+    spawnPurchasedCar(car: ShopCarSpec, customColor?: number, isTurbo?: boolean) {
+      const mesh = createVehicleMesh(car.style, customColor ?? car.color, true);
       const sx = 89;
       const sz = -36;
       mesh.position.set(sx, 0.04, sz);
       mesh.rotation.y = 0;
       worldGroup.add(mesh);
       parkedCars.push({
-        name: `${car.brand} ${car.name}`,
+        name: `${car.brand} ${car.name}${isTurbo ? ' (Turbo)' : ''}`,
         style: car.style,
+        isTurbo: Boolean(isTurbo),
         mesh,
         pos: new THREE.Vector3(sx, 0.04, sz),
         yaw: 0,
@@ -3560,6 +3739,9 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
         doorAngle: 0,
         doorTarget: 0,
       });
+    },
+    toggleStreetRace() {
+      toggleStreetRace();
     },
     returnToLobby() {
       stopContinuousHorn();

@@ -107,7 +107,21 @@ export interface TaxiJobHud {
   tier: 'Short' | 'Medium' | 'Long';
   distanceMeters: number;
   fareRupees: number;
+  streak: number;
 }
+
+export interface RaceHud {
+  active: boolean;
+  checkpoint: number;
+  totalCheckpoints: number;
+  timeLeft: number;
+  reward: number;
+}
+
+export const TURBO_UPGRADE_PRICE = 2500;
+export const REPAINT_PALETTE = [
+  0x38bdf8, 0xef4444, 0xfacc15, 0x10b981, 0xec4899, 0xa855f7, 0xf97316, 0xf8fafc, 0x1e293b,
+] as const;
 
 export interface ShopCarSpec {
   id: string;
@@ -240,6 +254,7 @@ export interface WorldHudSnapshot {
   nearbyVehicleName: string | null;
   cash: number;
   taxiJob: TaxiJobHud;
+  race: RaceHud;
   carShopRouteActive: boolean;
   nearCarShop: boolean;
   playerX: number;

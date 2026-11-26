@@ -4,6 +4,7 @@ import {
   createInitialCharacter,
   GENDER_CATALOG,
   PALETTES,
+  TURBO_UPGRADE_PRICE,
   type CharacterConfig,
   type GameStage,
   type GenderKey,
@@ -13,6 +14,8 @@ import {
   type WorldHudSnapshot,
 } from './types/game';
 import { isMuted, playSFX, playTaxiComplete, setMuted } from './audio/sfx';
+import { useDeviceInfo } from './utils/device';
+import { loadSavedState, saveGameState } from './utils/storage';
 import { createViceCoastRuntime } from './engine/viceCoastRuntime';
 import { GenderSelectScreen } from './components/GenderSelectScreen';
 import { CustomizerScreen } from './components/CustomizerScreen';
@@ -27,21 +30,40 @@ export function App() {
   const runtimeRef = useRef<ReturnType<typeof createViceCoastRuntime> | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
+  const initialSave = useRef(loadSavedState()).current;
+
   const [stage, setStage] = useState<GameStage>('gender');
-  const [character, setCharacter] = useState<CharacterConfig>(createInitialCharacter);
-  const [stats, setStats] = useState<PlayerStats>({ level: 1, xp: 0, cash: 250 });
+  const [character, setCharacter] = useState<CharacterConfig>(
+    () => initialSave?.character ?? createInitialCharacter()
+  );
+  const [stats, setStats] = useState<PlayerStats>(() => ({
+    level: 1,
+    xp: 0,
+    cash: initialSave?.cash ?? 250,
+  }));
   const [spawnKey, setSpawnKey] = useState<SpawnKey>('ocean_drive');
   const [todIndex, setTodIndex] = useState(0);
   const [muted, setMutedState] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  const [ownedCarIds, setOwnedCarIds] = useState<string[]>([]);
-  const [selectedGarageCarId, setSelectedGarageCarId] = useState<string | null>(null);
+  const [ownedCarIds, setOwnedCarIds] = useState<string[]>(() => initialSave?.ownedCarIds ?? []);
+  const [selectedGarageCarId, setSelectedGarageCarId] = useState<string | null>(
+    () => initialSave?.selectedGarageCarId ?? null
+  );
+  const [carColors, setCarColors] = useState<Record<string, number>>(
+    () => initialSave?.carColors ?? {}
+  );
+  const [turboCarIds, setTurboCarIds] = useState<string[]>(() => initialSave?.turboCarIds ?? []);
+
   const [garageOpen, setGarageOpen] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const [shopOpen, setShopOpen] = useState(false);
 
-  const [hud, setHud] = useState<WorldHudSnapshot>({
+  const deviceInfo = useDeviceInfo();
+  const [mobileOverride, setMobileOverride] = useState<boolean | null>(null);
+  const isMobile = mobileOverride !== null ? mobileOverride : deviceInfo.isMobile;
+
+  const [hud, setHud] = useState<WorldHudSnapshot>(() => ({
     district: 'Ocean Drive',
     speedKmh: 0,
     fps: 60,
@@ -49,20 +71,40 @@ export function App() {
     vehicleName: null,
     vehicleStyle: null,
     nearbyVehicleName: null,
-    cash: 250,
+    cash: initialSave?.cash ?? 250,
     taxiJob: {
       active: false,
       phase: 'pickup',
       tier: 'Short',
       distanceMeters: 0,
       fareRupees: 0,
+      streak: 0,
+    },
+    race: {
+      active: false,
+      checkpoint: 1,
+      totalCheckpoints: 6,
+      timeLeft: 0,
+      reward: 2000,
     },
     carShopRouteActive: false,
     nearCarShop: false,
     playerX: 178,
     playerZ: 12,
     playerYaw: Math.PI,
-  });
+  }));
+
+  // Auto-save progress to localStorage whenever wallet, garage, or character changes
+  useEffect(() => {
+    saveGameState({
+      cash: stats.cash,
+      ownedCarIds,
+      selectedGarageCarId,
+      carColors,
+      turboCarIds,
+      character,
+    });
+  }, [stats.cash, ownedCarIds, selectedGarageCarId, carColors, turboCarIds, character]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -117,13 +159,19 @@ export function App() {
     });
     runtimeRef.current = runtime;
 
+    if (initialSave?.cash !== undefined) {
+      runtime.setCash(initialSave.cash);
+    }
+    if (initialSave?.character?.gender) {
+      runtime.setCharacter(initialSave.character);
+    }
+
     return () => {
       runtime.dispose();
       runtimeRef.current = null;
     };
-  }, [handleSelectGender, showToast]);
+  }, [handleSelectGender, initialSave, showToast]);
 
-  // 'M' key shortcut to toggle City Map in world
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (stage === 'world' && e.code === 'KeyM') {
@@ -179,10 +227,21 @@ export function App() {
     runtimeRef.current?.setCash(nextCash);
     setOwnedCarIds((prev) => [...prev, car.id]);
     setSelectedGarageCarId(car.id);
-    runtimeRef.current?.spawnPurchasedCar(car);
+    runtimeRef.current?.spawnPurchasedCar(car, carColors[car.id], turboCarIds.includes(car.id));
     playTaxiComplete();
     setShopOpen(false);
     showToast(`Bought ${car.brand} ${car.name}! Parked outside the showroom — press E to drive!`);
+  };
+
+  const handleBuyTurbo = (carId: string) => {
+    if (stats.cash < TURBO_UPGRADE_PRICE || turboCarIds.includes(carId)) return;
+    const nextCash = stats.cash - TURBO_UPGRADE_PRICE;
+    setStats((prev) => ({ ...prev, cash: nextCash }));
+    setHud((prev) => ({ ...prev, cash: nextCash }));
+    runtimeRef.current?.setCash(nextCash);
+    setTurboCarIds((prev) => [...prev, carId]);
+    playTaxiComplete();
+    showToast('Turbo +25% Upgrade installed!');
   };
 
   return (
@@ -250,7 +309,12 @@ export function App() {
           const garageCar =
             CAR_SHOP_CATALOG.find((c) => c.id === selectedGarageCarId) ?? null;
           runtimeRef.current?.setCharacter(character);
-          runtimeRef.current?.enterOpenWorld(spawnKey, garageCar);
+          runtimeRef.current?.enterOpenWorld(
+            spawnKey,
+            garageCar,
+            garageCar ? carColors[garageCar.id] : undefined,
+            garageCar ? turboCarIds.includes(garageCar.id) : false
+          );
           goToStage('world');
           showToast(
             garageCar
@@ -263,12 +327,15 @@ export function App() {
 
       <WorldHud
         active={stage === 'world'}
+        isMobile={isMobile}
         hud={hud}
         todIndex={todIndex}
         muted={muted}
         onSetMinimapCanvas={(el) => runtimeRef.current?.setMinimapCanvas(el)}
+        onToggleDeviceMode={() => setMobileOverride(!isMobile)}
         onOpenMap={() => setMapOpen(true)}
         onOpenCarShop={() => setShopOpen(true)}
+        onToggleStreetRace={() => runtimeRef.current?.toggleStreetRace()}
         onCycleTimeOfDay={() => {
           playSFX('click');
           runtimeRef.current?.cycleTimeOfDay();
@@ -313,9 +380,17 @@ export function App() {
 
       <GarageModal
         open={stage === 'lobby' && garageOpen}
+        cash={stats.cash}
         ownedIds={ownedCarIds}
         selectedCarId={selectedGarageCarId}
+        carColors={carColors}
+        turboCarIds={turboCarIds}
         onSelectCar={(id) => setSelectedGarageCarId(id)}
+        onRepaintCar={(carId, color) => {
+          playSFX('click');
+          setCarColors((prev) => ({ ...prev, [carId]: color }));
+        }}
+        onBuyTurbo={handleBuyTurbo}
         onClose={() => setGarageOpen(false)}
       />
     </div>
