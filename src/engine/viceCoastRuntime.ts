@@ -1599,12 +1599,67 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
             });
         }
 
+        function createBlockSlabGeometry(halfSize, height, centerX, centerZ, cutoutRadius) {
+            if (Math.abs(centerX) !== 42 || Math.abs(centerZ) !== 42) {
+                const geo = new THREE.BoxGeometry(halfSize * 2, height, halfSize * 2);
+                geo.translate(0, height / 2, 0);
+                return geo;
+            }
+            const h = halfSize;
+            const rx = -centerX;
+            const ry = centerZ;
+            const sx = rx > 0 ? 1 : -1;
+            const sy = ry > 0 ? 1 : -1;
+            const edgeX = sx * h;
+            const edgeY = sy * h;
+            const yInt = ry - sy * Math.sqrt(Math.max(0, cutoutRadius * cutoutRadius - (edgeX - rx) ** 2));
+            const xInt = rx - sx * Math.sqrt(Math.max(0, cutoutRadius * cutoutRadius - (edgeY - ry) ** 2));
+            const a1 = Math.atan2(yInt - ry, edgeX - rx);
+            const a2 = Math.atan2(edgeY - ry, xInt - rx);
+
+            const corners = [[-h, -h], [h, -h], [h, h], [-h, h]];
+            const shape = new THREE.Shape();
+            const pts = [];
+            for (const [cx, cy] of corners) {
+                if (cx === edgeX && cy === edgeY) {
+                    if (sx * sy < 0) {
+                        pts.push({ type: 'pt', x: xInt, y: edgeY });
+                        pts.push({ type: 'arc', aStart: a2, aEnd: a1 });
+                    } else {
+                        pts.push({ type: 'pt', x: edgeX, y: yInt });
+                        pts.push({ type: 'arc', aStart: a1, aEnd: a2 });
+                    }
+                } else {
+                    pts.push({ type: 'pt', x: cx, y: cy });
+                }
+            }
+            const first = pts[0];
+            shape.moveTo(first.x, first.y);
+            for (let i = 1; i < pts.length; i++) {
+                const item = pts[i];
+                if (item.type === 'pt') shape.lineTo(item.x, item.y);
+                else shape.absarc(rx, ry, cutoutRadius, item.aStart, item.aEnd, true);
+            }
+            shape.closePath();
+
+            const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 24 });
+            geo.rotateX(-Math.PI / 2);
+            const uv = geo.attributes.uv;
+            const pos = geo.attributes.position;
+            const size = h * 2;
+            for (let i = 0; i < uv.count; i++) {
+                uv.setXY(i, (pos.getX(i) + h) / size, (pos.getZ(i) + h) / size);
+            }
+            uv.needsUpdate = true;
+            return geo;
+        }
+
         function buildCentralPark(cx, cz) {
             const parkGrass = new THREE.Mesh(
-                new THREE.BoxGeometry(58, 0.22, 58),
+                createBlockSlabGeometry(29, 0.22, cx, cz, 28.5),
                 new THREE.MeshStandardMaterial({ map: getGrassTex(), roughness: 0.92 })
             );
-            parkGrass.position.set(cx, 0.11, cz);
+            parkGrass.position.set(cx, 0, cz);
             parkGrass.receiveShadow = true;
             worldGroup.add(parkGrass);
             buildingRects.push({ x: cx, z: cz, w: 58, d: 58, isPark: true });
@@ -1653,10 +1708,10 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
 
         function buildExtraPark(cx, cz, style) {
             const parkGrass = new THREE.Mesh(
-                new THREE.BoxGeometry(58, 0.22, 58),
+                createBlockSlabGeometry(29, 0.22, cx, cz, 28.5),
                 new THREE.MeshStandardMaterial({ map: getGrassTex(), roughness: 0.92 })
             );
-            parkGrass.position.set(cx, 0.11, cz);
+            parkGrass.position.set(cx, 0, cz);
             parkGrass.receiveShadow = true;
             worldGroup.add(parkGrass);
             buildingRects.push({ x: cx, z: cz, w: 58, d: 58, isPark: true });
@@ -1955,8 +2010,8 @@ export function createViceCoastRuntime(container: HTMLElement, callbacks: Runtim
                     const centerX = (ROAD_COORDS[bx] + ROAD_COORDS[bx + 1]) / 2;
                     const centerZ = (ROAD_COORDS[bz] + ROAD_COORDS[bz + 1]) / 2;
 
-                    const swBlock = new THREE.Mesh(new THREE.BoxGeometry(68, 0.18, 68), swMat);
-                    swBlock.position.set(centerX, 0.09, centerZ);
+                    const swBlock = new THREE.Mesh(createBlockSlabGeometry(34, 0.18, centerX, centerZ, 26.4), swMat);
+                    swBlock.position.set(centerX, 0, centerZ);
                     swBlock.receiveShadow = true;
                     worldGroup.add(swBlock);
 
